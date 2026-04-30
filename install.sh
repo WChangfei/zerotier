@@ -10,6 +10,9 @@
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 ZT_DIR="${SCRIPT_DIR}/zt"
 
+# 获取服务器公网IP地址
+SERVER_IP=$(curl -s ipv4.icanhazip.com)
+
 
 # ==================== 颜色输出函数 ====================
 function blue() {
@@ -277,7 +280,7 @@ function main() {
   create_ztncui
   echo ""
   red "⚠️  步骤1完成!"
-  red "请访问 https://服务器IP:3443 登录 ztncui 控制台"
+  red "请访问 https://${SERVER_IP}:3443 登录 ztncui 控制台"
   red "账户: admin  | 密码: password"
   red "创建一个新的虚拟局域网并记录网络 ID"
   read -s -n1 -p "完成后按任意键继续步骤2..."
