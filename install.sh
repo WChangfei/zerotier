@@ -1,318 +1,505 @@
 #!/bin/bash
 # ==============================================================================
 # ZeroTier + ztncui 一键安装脚本
-# 功能: 自动完成 ztncui 节点安装、Moon 节点配置、控制器迁移
+# 功能: 提供菜单驱动的 ZeroTier 安装配置工具
 # 作者: 借鉴自 dajiangfu，经优化改进
-# 版本: 1.0
+# 版本: 2.0
+# 使用方式: sudo bash install.sh
 # ==============================================================================
 
-# 获取脚本所在目录
-SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# 获取脚本所在目录 (POSIX兼容方式)
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 ZT_DIR="${SCRIPT_DIR}/zt"
 
 # 获取服务器公网IP地址
 SERVER_IP=$(curl -s ipv4.icanhazip.com)
 
-
 # ==================== 颜色输出函数 ====================
-function blue() {
+blue() {
   echo -e "\033[34m\033[01m$1\033[0m"
 }
 
-function green() {
+green() {
   echo -e "\033[32m\033[01m$1\033[0m"
 }
 
-function red() {
+red() {
   echo -e "\033[31m\033[01m$1\033[0m"
 }
 
-function version_lt() {
-  test "$(echo "$@" | tr " " "\n" | sort -rV | head -n 1)" != "$1";
+# ==================== 系统检测 ====================
+release_os=""
+systemPackage_os=""
+
+detect_system() {
+  blue "[系统检测] 正在识别操作系统类型..."
+  if [[ -f /etc/redhat-release ]]; then
+    release_os="centos"
+  elif cat /etc/issue | grep -Eqi "debian"; then
+    release_os="debian"
+  elif cat /etc/issue | grep -Eqi "ubuntu"; then
+    release_os="ubuntu"
+  elif cat /etc/issue | grep -Eqi "centos|red hat|redhat"; then
+    release_os="centos"
+  elif cat /proc/version | grep -Eqi "debian"; then
+    release_os="debian"
+  elif cat /proc/version | grep -Eqi "ubuntu"; then
+    release_os="ubuntu"
+  elif cat /proc/version | grep -Eqi "centos|red hat|redhat"; then
+    release_os="centos"
+  fi
+
+  if [ "$release_os" = "centos" ]; then
+    systemPackage_os="yum"
+  elif [ "$release_os" = "ubuntu" ] || [ "$release_os" = "debian" ]; then
+    systemPackage_os="apt"
+  fi
+
+  green "[系统检测] 当前系统: ${release_os}, 包管理器: ${systemPackage_os}"
 }
 
+# ==================== 功能函数 ====================
 
-# ==================== 系统检测 ====================
-# 检测操作系统类型 (CentOS / Debian / Ubuntu)
-# 代码来源: 秋水逸冰 SS 脚本
-blue "[系统检测] 正在识别操作系统类型..."
-if [[ -f /etc/redhat-release ]]; then
-  release_os="centos"
-elif cat /etc/issue | grep -Eqi "debian"; then
-  release_os="debian"
-elif cat /etc/issue | grep -Eqi "ubuntu"; then
-  release_os="ubuntu"
-elif cat /etc/issue | grep -Eqi "centos|red hat|redhat"; then
-  release_os="centos"
-elif cat /proc/version | grep -Eqi "debian"; then
-  release_os="debian"
-elif cat /proc/version | grep -Eqi "ubuntu"; then
-  release_os="ubuntu"
-elif cat /proc/version | grep -Eqi "centos|red hat|redhat"; then
-  release_os="centos"
-fi
+# 选项1: 清理
+cleanup() {
+  blue "[清理] 开始卸载旧版本并清理相关文件..."
+  
+  # 停止服务
+  blue "[清理] 停止相关服务..."
+  sudo systemctl stop zerotier-one 2>/dev/null || true
+  sudo systemctl stop ztncui 2>/dev/null || true
+  sudo systemctl stop tinyhttpd 2>/dev/null || true
+  
+  # 卸载软件包
+  blue "[清理] 卸载 zerotier-one、ztncui 和 nginx..."
+  if [ "$release_os" = "centos" ]; then
+    sudo yum remove zerotier-one ztncui nginx -y 2>/dev/null || true
+  elif [ "$release_os" = "ubuntu" ] || [ "$release_os" = "debian" ]; then
+    sudo apt-get remove zerotier-one ztncui nginx -y 2>/dev/null || true
+    sudo apt-get purge zerotier-one ztncui nginx -y 2>/dev/null || true
+  fi
+  
+  # 删除相关目录
+  blue "[清理] 删除相关目录..."
+  sudo rm -rf /var/lib/zerotier-one 2>/dev/null || true
+  sudo rm -rf /opt/key-networks 2>/dev/null || true
+  sudo rm -rf /etc/zerotier 2>/dev/null || true
+  sudo rm -rf /etc/nginx/conf.d/zt-download.conf 2>/dev/null || true
+  
+  # 删除脚本所在目录下的 zt 目录
+  if [ -d "$ZT_DIR" ]; then
+    rm -rf "$ZT_DIR" 2>/dev/null || true
+  fi
+  
+  green "[清理] 清理完成!"
+}
 
-# 设置系统包管理器
-if [ "$release_os" == "centos" ]; then
-  systemPackage_os="yum"
-elif [ "$release_os" == "ubuntu" ] || [ "$release_os" == "debian" ]; then
-  systemPackage_os="apt"
-fi
-
-green "[系统检测] 当前系统: ${release_os}, 包管理器: ${systemPackage_os}"
-
-
-# ==================== 安装函数 ====================
-
-# 安装 ZeroTier 服务
-function install_zerotier() {
-  blue "[步骤1/3] 正在安装 ZeroTier 软件..."
+# 选项2: 安装 ZeroTier 和 ztncui
+install_zt_ui() {
+  # 安装 ZeroTier
+  blue "[安装] 正在安装 ZeroTier..."
   curl -s https://install.zerotier.com/ | sudo bash
   
-  # 配置 local.conf 支持多个端口
-  blue "[步骤1/3] 配置 ZeroTier local.conf 多端口支持..."
+  # 配置 local.conf
+  blue "[安装] 配置 ZeroTier 端口为 8080..."
   local ZT_CONFIG_DIR="/var/lib/zerotier-one"
   local ZT_LOCAL_CONF="$ZT_CONFIG_DIR/local.conf"
   
-  # 停止服务以便修改配置
-  systemctl stop zerotier-one.service 2>/dev/null || true
+  # 完全停止服务并清理缓存
+  sudo systemctl stop zerotier-one.service 2>/dev/null || true
+  sudo killall -9 zerotier-one 2>/dev/null || true
+  sleep 3
   
-  # 创建 local.conf 配置文件，支持端口 8080, 9993, 19995
-  cat > "$ZT_LOCAL_CONF" << EOF
+  # 确保目录存在
+  sudo mkdir -p "$ZT_CONFIG_DIR"
+  
+  # 写入配置文件
+  sudo bash -c "cat > '$ZT_LOCAL_CONF' << 'EOF'
 {
-  "settings": {
-    "primaryPort": 9993,
-    "secondaryPort": 8080,
-    "tertiaryPort": 19995,
-    "portMappingEnabled": true
+  \"settings\": {
+    \"primaryPort\": 8080,
+    \"portMappingEnabled\": true
   }
 }
-EOF
+EOF"
   
-  # 设置正确的权限
-  chown zerotier-one:zerotier-one "$ZT_LOCAL_CONF"
-  chmod 600 "$ZT_LOCAL_CONF"
+  # 设置正确权限
+  sudo chown zerotier-one:zerotier-one "$ZT_LOCAL_CONF"
+  sudo chmod 600 "$ZT_LOCAL_CONF"
   
-  blue "[步骤1/3] 正在启动 ZeroTier 服务..."
-  systemctl start zerotier-one.service
-  systemctl enable zerotier-one.service
+  # 启动服务
+  sudo systemctl daemon-reload
+  sudo systemctl start zerotier-one.service
+  sudo systemctl enable zerotier-one.service
   
-  green "[步骤1/3] ZeroTier 安装并启动完成"
-  green "[步骤1/3] 已配置端口映射: 8080, 9993, 19995"
-}
-
-# 安装 ztncui 管理界面
-function install_ztncui() {
-  blue "[步骤1/3] 正在安装 ztncui 管理界面..."
+  # 等待服务启动
+  blue "[安装] 等待 ZeroTier 服务启动..."
+  sleep 5
   
+  # 检查服务状态
+  if sudo systemctl is-active --quiet zerotier-one; then
+    green "[安装] ZeroTier 安装完成"
+  else
+    red "[安装] ZeroTier 服务启动失败"
+    return
+  fi
+  
+  # 安装 ztncui
+  blue "[安装] 正在安装 ztncui..."
   local ZTNCUI_DEB="ztncui_0.8.6_amd64.deb"
   
-  # 优先使用本地安装包
   if [ -f "$ZTNCUI_DEB" ]; then
-    green "[步骤1/3] 检测到本地安装包，直接使用"
+    green "[安装] 检测到本地安装包，直接使用"
   else
-    green "[步骤1/3] 本地无安装包，从网络下载..."
+    green "[安装] 本地无安装包，从网络下载..."
     curl -O https://s3-us-west-1.amazonaws.com/key-networks/deb/ztncui/1/x86_64/"$ZTNCUI_DEB"
   fi
   
-  # 安装软件包
   sudo apt-get install ./"$ZTNCUI_DEB" -y
   
-  # 配置 HTTPS 端口 - 使用符号链接方式
-  blue "[步骤1/3] 配置 ztncui HTTPS 端口..."
-  mkdir -p "$ZT_DIR"
-  echo "HTTPS_PORT = 3443" > "$ZT_DIR/env"
+  # 配置 .env
+  blue "[安装] 配置 ztncui..."
+  sudo systemctl stop ztncui 2>/dev/null || true
+  sleep 2
   
-  # 创建符号链接
-  ln -sf $ZT_DIR/env /opt/key-networks/ztncui/.env
+  sudo mkdir -p /opt/key-networks/ztncui
+  sudo bash -c "cat > /opt/key-networks/ztncui/.env << 'EOF'
+NODE_ENV=production
+HTTPS_PORT=3443
+ZT_TOKEN=
+ZT_ADDR=127.0.0.1:8080
+EOF"
   
-  # 重启服务使配置生效
-  blue "[步骤1/3] 重启 ztncui 服务..."
-  sudo systemctl restart ztncui
+  # 开放端口
+  if [ "$release_os" = "centos" ]; then
+    sudo firewall-cmd --zone=public --add-port=3443/tcp --permanent
+    sudo firewall-cmd --reload
+  elif [ "$release_os" = "ubuntu" ] || [ "$release_os" = "debian" ]; then
+    sudo ufw allow 3443/tcp
+    sudo ufw reload
+  fi
   
-  green "[步骤1/3] ztncui 安装完成"
+  sudo systemctl daemon-reload
+  sudo systemctl start ztncui
+  
+  green "[安装] ztncui 安装完成"
+  green "[安装] 请访问 https://${SERVER_IP}:3443 登录"
+  green "[安装] 账户: admin | 密码: password"
 }
 
-# 创建 ztncui 节点 (调用上述两个安装函数)
-function create_ztncui() {
-  install_zerotier
-  install_ztncui
-}
-
-
-# ==================== Moon 节点配置 ====================
-
-function create_moon() {
-  blue "[步骤2/3] 开始配置 Moon 节点..."
+# 选项3: 配置 Moon 节点
+install_moon() {
+  # 检查 ZeroTier 是否安装（检查服务状态或命令）
+  if ! command -v zerotier-cli &> /dev/null && ! systemctl is-active --quiet zerotier-one 2>/dev/null; then
+    red "[Moon] ZeroTier 未安装或未运行，请先执行选项2"
+    return
+  fi
   
   # 加入虚拟局域网
-  read -p "[步骤2/3] 请输入你的 ztncui 虚拟局域网 ID: " you_net_ID
-  zerotier-cli join "$you_net_ID" | grep OK
+  read -p "[Moon] 请输入你的 ztncui 虚拟局域网 ID: " you_net_ID
+  sudo zerotier-cli join "$you_net_ID" | grep OK
   
   if [ $? -eq 0 ]; then
-    green "[步骤2/3] 成功加入网络: $you_net_ID"
-    read -s -n1 -p "[步骤2/3] 请在 ztncui 管理页面确认设备后按任意键继续..."
+    green "[Moon] 成功加入网络: $you_net_ID"
+    read -s -n1 -p "[Moon] 请在 ztncui 管理页面确认设备后按任意键继续..."
     
     # 创建 Moon 配置
-    blue "[步骤2/3] 生成 Moon 配置文件..."
     cd /var/lib/zerotier-one/
-    
-    # 获取公网 IP 并生成 moon.json
     local ip_addr=$(curl -s ipv4.icanhazip.com)
-    blue "[步骤2/3] 检测到公网 IP: $ip_addr"
+    blue "[Moon] 检测到公网 IP: $ip_addr"
     
-    zerotier-idtool initmoon identity.public > moon.json
+    sudo zerotier-idtool initmoon identity.public > moon.json
     
-    # 修改 moon.json 配置，支持三个端口
-    if sed -i "s/\[\]/\[ \"$ip_addr\/9993\", \"$ip_addr\/8080\", \"$ip_addr\/19995\" \]/" moon.json >/dev/null 2>/dev/null; then
-      green "[步骤2/3] moon.json 配置完成"
-      green "[步骤2/3] moon.json 已配置端口: 9993, 8080, 19995"
+    if sudo sed -i "s/\[\]/\[ \"$ip_addr\/8080\" \]/" moon.json >/dev/null 2>/dev/null; then
+      green "[Moon] moon.json 配置完成"
     else
-      red "[步骤2/3] moon.json 配置失败"
-      exit 1
+      red "[Moon] moon.json 配置失败"
+      return
     fi
     
-    # 防火墙配置 - 开放三个端口
-    if [ "$release_os" == "centos" ]; then
-      blue "[步骤2/3] 配置 CentOS 防火墙..."
-      firewall-cmd --zone=public --add-port=9993/udp --permanent
-      firewall-cmd --zone=public --add-port=8080/udp --permanent
-      firewall-cmd --zone=public --add-port=19995/udp --permanent
-      firewall-cmd --reload
-    elif [ "$release_os" == "ubuntu" ] || [ "$release_os" == "debian" ]; then
-      blue "[步骤2/3] 配置 Ubuntu/Debian 防火墙..."
-      ufw allow 9993/udp
-      ufw allow 8080/udp
-      ufw allow 19995/udp
-      ufw reload
+    # 开放防火墙端口
+    if [ "$release_os" = "centos" ]; then
+      sudo firewall-cmd --zone=public --add-port=8080/udp --permanent
+      sudo firewall-cmd --reload
+    elif [ "$release_os" = "ubuntu" ] || [ "$release_os" = "debian" ]; then
+      sudo ufw allow 8080/udp
+      sudo ufw reload
     fi
     
     # 生成签名文件
-    blue "[步骤2/3] 生成 Moon 签名文件..."
-    zerotier-idtool genmoon moon.json
+    mkdir -p "$ZT_DIR"
+    sudo mv moon.json "$ZT_DIR/"
     
-    # 将 moon.json 移动到 $ZT_DIR/ 目录
-    mv moon.json "$ZT_DIR/"
+    cd "$ZT_DIR"
+    sudo zerotier-idtool genmoon "$ZT_DIR/moon.json"
     
-    # 生成签名文件到 $ZT_DIR/moons.d/
-    blue "[步骤2/3] 生成 Moon 签名文件..."
-    zerotier-idtool genmoon "$ZT_DIR/moon.json"
-    
-    # 移动 .moon 文件到 $ZT_DIR/moons.d/
-    mv /var/lib/zerotier-one/*.moon "$ZT_DIR/moons.d/" 2>/dev/null || true
+    if ls *.moon 1>/dev/null 2>&1; then
+      green "[Moon] Moon 签名文件生成成功"
+    else
+      red "[Moon] Moon 签名文件生成失败!"
+      return
+    fi
     
     # 创建符号链接
-    blue "[步骤2/3] 创建符号链接..."
-    ln -sf "$ZT_DIR/moon.json" /var/lib/zerotier-one/moon.json
-    ln -sf "$ZT_DIR/moons.d" /var/lib/zerotier-one/moons.d
+    sudo mkdir -p /var/lib/zerotier-one/moons.d
+    cd /var/lib/zerotier-one/moons.d
+    sudo cp -f "$ZT_DIR"/*.moon . 2>/dev/null || true
+    sudo cp -f "$ZT_DIR/moon.json" /var/lib/zerotier-one/moon.json 2>/dev/null || true
+    
+    # 配置 ztncui
+    local token=$(sudo cat /var/lib/zerotier-one/authtoken.secret)
+    sudo sed -i "s/ZT_TOKEN=/ZT_TOKEN=$token/" /opt/key-networks/ztncui/.env
     
     # 重启服务
-    blue "[步骤2/3] 重启 ZeroTier 服务..."
-    systemctl restart zerotier-one
+    sudo systemctl restart zerotier-one
+    sudo systemctl restart ztncui
     
-    # 配置 ztncui 连接
-    blue "[步骤2/3] 配置 ztncui 与 ZeroTier 连接..."
-    local token=$(cat /var/lib/zerotier-one/authtoken.secret)
-    echo "ZT_TOKEN=$token" >> "$ZT_DIR/env"
-    echo "ZT_ADDR=127.0.0.1:9993" >> "$ZT_DIR/env"
-    echo "NODE_ENV=production" >> "$ZT_DIR/env"
-    
-    green "[步骤2/3] Moon 节点配置完成"
-    green "[步骤2/3] moons.d 目录已生成，路径: /var/lib/zerotier-one/"
-    
+    green "[Moon] Moon 节点配置完成"
   else
-    red "[步骤2/3] 加入网络失败，请检查网络 ID 是否正确"
-    exit 1
+    red "[Moon] 加入网络失败，请检查网络 ID"
   fi
 }
 
-
-# ==================== 控制器迁移 ====================
-
-function migrate_controller() {
-  blue "[步骤3/3] 开始迁移控制器..."
+# 选项4: 迁移控制器生成 planet
+migrate_planet() {
+  # 检查 zt 目录
+  if [ ! -d "$ZT_DIR" ]; then
+    red "[Planet] zt 目录不存在，请先执行选项3"
+    return
+  fi
   
-  # 确保 $ZT_DIR/ 目录存在
-  mkdir -p "$ZT_DIR"
-  
-  # 下载 mkmoonworld 工具到 $ZT_DIR/ 目录
+  # 下载 mkmoonworld
   cd "$ZT_DIR"
-  blue "[步骤3/3] 下载 mkmoonworld 工具..."
-  wget -q https://github.com/kaaass/ZeroTierOne/releases/download/mkmoonworld-1.0/mkmoonworld-x86
+  blue "[Planet] 准备 mkmoonworld 工具..."
+  
+  if [ -f "$SCRIPT_DIR/mkmoonworld-x86" ]; then
+    green "[Planet] 检测到本地 mkmoonworld-x86，复制到工作目录"
+    cp "$SCRIPT_DIR/mkmoonworld-x86" .
+  elif [ -f "mkmoonworld-x86" ]; then
+    green "[Planet] 检测到本地 mkmoonworld-x86，直接使用"
+  else
+    green "[Planet] 本地无 mkmoonworld-x86，从网络下载..."
+    wget -q https://github.com/kaaass/ZeroTierOne/releases/download/mkmoonworld-1.0/mkmoonworld-x86
+  fi
+  
   chmod 777 mkmoonworld-x86
   
-  # 生成 planet 文件到 $ZT_DIR/ 目录
-  blue "[步骤3/3] 生成 planet 文件..."
+  # 生成 planet 文件
+  blue "[Planet] 生成 planet 文件..."
   ./mkmoonworld-x86 "$ZT_DIR/moon.json"
-  
-  # 重命名并移动到 $ZT_DIR/
   mv world.bin "$ZT_DIR/planet"
   
-  # 创建符号链接到 ZeroTier 目录
-  blue "[步骤3/3] 创建 planet 符号链接..."
-  ln -sf "$ZT_DIR/planet" /var/lib/zerotier-one/planet
+  # 直接复制文件
+  sudo cp -f "$ZT_DIR/planet" /var/lib/zerotier-one/planet
   
   # 重启服务
-  blue "[步骤3/3] 重启 ZeroTier 服务..."
-  systemctl restart zerotier-one
+  sudo systemctl restart zerotier-one
   
-  green "[步骤3/3] 控制器迁移完成"
+  # 清理临时文件
+  rm -f mkmoonworld-x86 moon.json 2>/dev/null || true
+  
+  green "[Planet] 控制器迁移完成，planet 文件已生成"
+  green "[Planet] planet 文件路径: $ZT_DIR/planet"
 }
 
+# 选项5: 安装 HTTP 服务（使用 lighttpd）
+install_http() {
+  blue "[HTTP] 安装 lighttpd HTTP 服务..."
+  
+  # 先完全卸载旧版本
+  blue "[HTTP] 完全卸载 lighttpd..."
+  sudo systemctl stop lighttpd 2>/dev/null || true
+  sudo systemctl disable lighttpd 2>/dev/null || true
+  
+  # 卸载软件包
+  if [ "$release_os" = "centos" ]; then
+    sudo yum remove -y lighttpd 2>/dev/null || true
+  elif [ "$release_os" = "ubuntu" ] || [ "$release_os" = "debian" ]; then
+    sudo apt-get remove -y --purge lighttpd 2>/dev/null || true
+    sudo apt-get autoremove -y 2>/dev/null || true
+  fi
+  
+  # 删除软件目录和所有配置
+  sudo rm -rf /etc/lighttpd 2>/dev/null || true
+  sudo rm -rf /var/log/lighttpd 2>/dev/null || true
+  
+  # 安装 lighttpd
+  if [ "$release_os" = "centos" ]; then
+    sudo yum install -y lighttpd 2>/dev/null || true
+  elif [ "$release_os" = "ubuntu" ] || [ "$release_os" = "debian" ]; then
+    sudo apt-get install -y lighttpd 2>/dev/null || true
+  fi
+  
+  # 检查 lighttpd 是否安装成功
+  if ! command -v lighttpd &> /dev/null && [ ! -f /usr/sbin/lighttpd ]; then
+    red "[HTTP] lighttpd 安装失败，请手动安装"
+    return
+  fi
+  
+  # 备份原配置
+  sudo cp /etc/lighttpd/lighttpd.conf /etc/lighttpd/lighttpd.conf.bak 2>/dev/null || true
+  
+  # 检查端口是否被占用，如果是则杀死占用进程
+  blue "[HTTP] 检查端口 8000 是否被占用..."
+  PORT_PID=$(sudo ss -tlnp | grep ":8000" | awk '{print $7}' | cut -d',' -f1 | cut -d'=' -f2)
+  if [ -n "$PORT_PID" ]; then
+    blue "[HTTP] 端口 8000 被进程 $PORT_PID 占用，正在终止..."
+    sudo kill -9 "$PORT_PID" 2>/dev/null || true
+    sleep 2
+  fi
+  
+  # 设置 zt 目录权限（确保 lighttpd 可以访问）
+  sudo chown -R www-data:www-data "$SCRIPT_DIR/zt" 2>/dev/null || true
+  sudo chmod -R 755 "$SCRIPT_DIR/zt" 2>/dev/null || true
+  
+  # 修复可能被误识别为目录的文件（移除末尾斜杠问题）
+  for file in "$SCRIPT_DIR/zt"/*; do
+    if [ -f "$file" ] && [ ! -d "$file" ]; then
+      # 确保是文件而不是目录
+      sudo chmod 644 "$file" 2>/dev/null || true
+    fi
+  done
+  
+  # 确保 zt 目录存在
+  if [ ! -d "$SCRIPT_DIR/zt" ]; then
+    sudo mkdir -p "$SCRIPT_DIR/zt"
+    sudo chown www-data:www-data "$SCRIPT_DIR/zt"
+    sudo chmod 755 "$SCRIPT_DIR/zt"
+  fi
+  
+  # 修改主配置文件（使用sed替换变量）
+  sudo bash -c "cat > /etc/lighttpd/lighttpd.conf << 'EOF'
+server.modules = (
+    \"mod_indexfile\",
+    \"mod_access\",
+    \"mod_alias\",
+    \"mod_redirect\",
+)
 
-# ==================== 主执行函数 ====================
+server.document-root        = \"__SCRIPT_DIR__/zt\"
+server.errorlog             = \"/var/log/lighttpd/error.log\"
+server.pid-file             = \"/run/lighttpd.pid\"
+server.port                 = 8000
+server.bind                 = \"0.0.0.0\"
+dir-listing.activate        = \"enable\"
+EOF"
+  
+  # 替换变量
+  sudo sed -i "s|__SCRIPT_DIR__|$SCRIPT_DIR|g" /etc/lighttpd/lighttpd.conf
+  
+  # 重启服务
+  sudo systemctl restart lighttpd
+  
+  # 开放防火墙端口
+  if [ "$release_os" = "centos" ]; then
+    sudo firewall-cmd --zone=public --add-port=8000/tcp --permanent
+    sudo firewall-cmd --reload
+  elif [ "$release_os" = "ubuntu" ] || [ "$release_os" = "debian" ]; then
+    sudo ufw allow 8000/tcp
+    sudo ufw reload
+  fi
+  
+  # 检查服务是否启动
+  if sudo ss -tlnp | grep -q ":8000"; then
+    green "[HTTP] HTTP 服务安装完成"
+    green "[HTTP] 下载地址: http://${SERVER_IP}:8000/"
+  else
+    red "[HTTP] HTTP 服务启动失败"
+    sudo systemctl status lighttpd 2>&1 || true
+  fi
+}
 
-function main() {
-  # 脚本介绍
+# ==================== 菜单函数 ====================
+show_menu() {
   clear
   echo ""
   green "╔══════════════════════════════════════════════════════════════╗"
-  green "║              ZeroTier + ztncui 一键安装脚本                   ║"
-  green "╠══════════════════════════════════════════════════════════════╣"
-  green "║  本脚本将自动完成以下步骤:                                    ║"
-  green "║  1. 安装 ZeroTier 和 ztncui 管理界面                          ║"
-  green "║  2. 配置 Moon 中转节点                                        ║"
-  green "║  3. 迁移控制器并生成 planet 文件                              ║"
+  green "║            ZeroTier + ztncui 管理工具 v2.0                  ║"
   green "╚══════════════════════════════════════════════════════════════╝"
   echo ""
+  blue "  服务器 IP: ${SERVER_IP}"
+  blue "  脚本目录: ${SCRIPT_DIR}"
+  echo ""
+  echo "  1. 🔧 清理旧版本"
+  echo "  2. 🚀 安装 ZeroTier + ztncui"
+  echo "  3. 🌙 配置 Moon 节点"
+  echo "  4. 🪐 迁移控制器生成 planet"
+  echo "  5. 🌐 安装 HTTP 下载服务"
+  echo "  6. ✅ 一键完成全部操作"
+  echo "  0. 🚪 退出"
+  echo ""
+  read -p "  请输入选择 [0-6]: " choice
+  echo ""
+}
+
+# 选项6: 一键完成全部操作
+run_all() {
+  cleanup
+  echo ""
+  install_zt_ui
+  echo ""
+  read -s -n1 -p "按任意键继续配置 Moon 节点..."
+  echo ""
+  install_moon
+  echo ""
+  read -s -n1 -p "按任意键继续迁移控制器..."
+  echo ""
+  migrate_planet
+  echo ""
+  install_http
+  echo ""
   
-  # 步骤1: 安装基础软件
-  create_ztncui
-  echo ""
-  red "⚠️  步骤1完成!"
-  red "请访问 https://${SERVER_IP}:3443 登录 ztncui 控制台"
-  red "账户: admin  | 密码: password"
-  red "创建一个新的虚拟局域网并记录网络 ID"
-  read -s -n1 -p "完成后按任意键继续步骤2..."
-  echo ""
-  
-  # 步骤2: 配置 Moon 节点
-  create_moon
-  echo ""
-  read -s -n1 -p "步骤2完成，按任意键继续步骤3..."
-  echo ""
-  
-  # 步骤3: 迁移控制器
-  migrate_controller
-  echo ""
-  
-  # 完成提示
   green "╔══════════════════════════════════════════════════════════════╗"
-  green "║                      安装完成!                               ║"
+  green "║                      全部操作完成!                           ║"
   green "╠══════════════════════════════════════════════════════════════╣"
-  green "║  1. 已安装 ZeroTier 和 ztncui                                ║"
-  green "║  2. Moon 节点配置完成                                        ║"
-  green "║  3. 控制器迁移完成，生成了 planet 文件                        ║"
+  green "║  🌐 ztncui 管理地址: https://${SERVER_IP}:3443              ║"
+  green "║     账户: admin | 密码: password                            ║"
   green "║                                                              ║"
-  green "║  📁 配置文件目录: $ZT_DIR/                                   ║"
-  green "║  📁 moons.d 目录路径: $ZT_DIR/moons.d/                       ║"
-  green "║  📁 planet 文件路径: $ZT_DIR/planet                          ║"
-  green "║  📁 env 配置文件: $ZT_DIR/env                                ║"
+  green "║  📁 planet 文件: http://${SERVER_IP}/zt/planet              ║"
   green "║                                                              ║"
-  green "║  请将 planet 文件下载到客户端并替换                            ║"
+  green "║  客户端替换 planet 文件后重启 ZeroTier 即可连接到私有网络     ║"
   green "╚══════════════════════════════════════════════════════════════╝"
 }
 
+# ==================== 主函数 ====================
+main() {
+  detect_system
+  
+  while true; do
+    show_menu
+    
+    case $choice in
+      1)
+        cleanup
+        ;;
+      2)
+        install_zt_ui
+        ;;
+      3)
+        install_moon
+        ;;
+      4)
+        migrate_planet
+        ;;
+      5)
+        install_http
+        ;;
+      6)
+        run_all
+        ;;
+      0)
+        green "感谢使用！再见~"
+        exit 0
+        ;;
+      *)
+        red "无效选择，请输入 0-6"
+        ;;
+    esac
+    
+    echo ""
+    read -s -n1 -p "按任意键继续..."
+  done
+}
 
 # 执行主函数
 main
