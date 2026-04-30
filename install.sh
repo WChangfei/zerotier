@@ -117,8 +117,8 @@ function install_ztncui() {
   
   # 配置 HTTPS 端口 - 使用符号链接方式
   blue "[步骤1/3] 配置 ztncui HTTPS 端口..."
-  mkdir -p /zt
-  echo "HTTPS_PORT = 3443" > $ZT_DIR/env
+  mkdir -p "$ZT_DIR"
+  echo "HTTPS_PORT = 3443" > "$ZT_DIR/env"
   
   # 创建符号链接
   ln -sf $ZT_DIR/env /opt/key-networks/ztncui/.env
@@ -188,24 +188,20 @@ function create_moon() {
     blue "[步骤2/3] 生成 Moon 签名文件..."
     zerotier-idtool genmoon moon.json
     
-    # 创建 zt 目录用于存储配置文件
-    blue "[步骤2/3] 创建配置文件存储目录 $ZT_DIR/..."
-    mkdir -p $ZT_DIR/moons.d
-    
     # 将 moon.json 移动到 $ZT_DIR/ 目录
-    mv moon.json $ZT_DIR/
+    mv moon.json "$ZT_DIR/"
     
     # 生成签名文件到 $ZT_DIR/moons.d/
     blue "[步骤2/3] 生成 Moon 签名文件..."
-    zerotier-idtool genmoon $ZT_DIR/moon.json
+    zerotier-idtool genmoon "$ZT_DIR/moon.json"
     
     # 移动 .moon 文件到 $ZT_DIR/moons.d/
-    mv /var/lib/zerotier-one/*.moon $ZT_DIR/moons.d/ 2>/dev/null || true
+    mv /var/lib/zerotier-one/*.moon "$ZT_DIR/moons.d/" 2>/dev/null || true
     
     # 创建符号链接
     blue "[步骤2/3] 创建符号链接..."
-    ln -sf $ZT_DIR/moon.json /var/lib/zerotier-one/moon.json
-    ln -sf $ZT_DIR/moons.d /var/lib/zerotier-one/moons.d
+    ln -sf "$ZT_DIR/moon.json" /var/lib/zerotier-one/moon.json
+    ln -sf "$ZT_DIR/moons.d" /var/lib/zerotier-one/moons.d
     
     # 重启服务
     blue "[步骤2/3] 重启 ZeroTier 服务..."
@@ -214,9 +210,9 @@ function create_moon() {
     # 配置 ztncui 连接
     blue "[步骤2/3] 配置 ztncui 与 ZeroTier 连接..."
     local token=$(cat /var/lib/zerotier-one/authtoken.secret)
-    echo "ZT_TOKEN=$token" >> $ZT_DIR/env
-    echo "ZT_ADDR=127.0.0.1:9993" >> $ZT_DIR/env
-    echo "NODE_ENV=production" >> $ZT_DIR/env
+    echo "ZT_TOKEN=$token" >> "$ZT_DIR/env"
+    echo "ZT_ADDR=127.0.0.1:9993" >> "$ZT_DIR/env"
+    echo "NODE_ENV=production" >> "$ZT_DIR/env"
     
     green "[步骤2/3] Moon 节点配置完成"
     green "[步骤2/3] moons.d 目录已生成，路径: /var/lib/zerotier-one/"
@@ -234,24 +230,24 @@ function migrate_controller() {
   blue "[步骤3/3] 开始迁移控制器..."
   
   # 确保 $ZT_DIR/ 目录存在
-  mkdir -p /zt
+  mkdir -p "$ZT_DIR"
   
   # 下载 mkmoonworld 工具到 $ZT_DIR/ 目录
-  cd /zt
+  cd "$ZT_DIR"
   blue "[步骤3/3] 下载 mkmoonworld 工具..."
   wget -q https://github.com/kaaass/ZeroTierOne/releases/download/mkmoonworld-1.0/mkmoonworld-x86
   chmod 777 mkmoonworld-x86
   
   # 生成 planet 文件到 $ZT_DIR/ 目录
   blue "[步骤3/3] 生成 planet 文件..."
-  ./mkmoonworld-x86 $ZT_DIR/moon.json
+  ./mkmoonworld-x86 "$ZT_DIR/moon.json"
   
   # 重命名并移动到 $ZT_DIR/
-  mv world.bin $ZT_DIR/planet
+  mv world.bin "$ZT_DIR/planet"
   
   # 创建符号链接到 ZeroTier 目录
   blue "[步骤3/3] 创建 planet 符号链接..."
-  ln -sf $ZT_DIR/planet /var/lib/zerotier-one/planet
+  ln -sf "$ZT_DIR/planet" /var/lib/zerotier-one/planet
   
   # 重启服务
   blue "[步骤3/3] 重启 ZeroTier 服务..."
@@ -305,8 +301,10 @@ function main() {
   green "║  2. Moon 节点配置完成                                        ║"
   green "║  3. 控制器迁移完成，生成了 planet 文件                        ║"
   green "║                                                              ║"
-  green "║  📁 moons.d 目录路径: /var/lib/zerotier-one/moons.d/         ║"
-  green "║  📁 planet 文件路径: /home/planet                            ║"
+  green "║  📁 配置文件目录: $ZT_DIR/                                   ║"
+  green "║  📁 moons.d 目录路径: $ZT_DIR/moons.d/                       ║"
+  green "║  📁 planet 文件路径: $ZT_DIR/planet                          ║"
+  green "║  📁 env 配置文件: $ZT_DIR/env                                ║"
   green "║                                                              ║"
   green "║  请将 planet 文件下载到客户端并替换                            ║"
   green "╚══════════════════════════════════════════════════════════════╝"
