@@ -100,8 +100,12 @@ install_zt_ui() {
   blue "[安装] 正在安装 ZeroTier..."
   curl -s https://install.zerotier.com/ | sudo bash
   
+  # 让用户输入端口号
+  read -p "[安装] 请输入 ZeroTier 端口号 (默认: 9993): " ZT_PORT
+  ZT_PORT=${ZT_PORT:-9993}
+  
   # 配置 local.conf
-  blue "[安装] 配置 ZeroTier 端口为 8080..."
+  blue "[安装] 配置 ZeroTier 端口为 $ZT_PORT..."
   local ZT_CONFIG_DIR="/var/lib/zerotier-one"
   local ZT_LOCAL_CONF="$ZT_CONFIG_DIR/local.conf"
   
@@ -114,10 +118,10 @@ install_zt_ui() {
   sudo mkdir -p "$ZT_CONFIG_DIR"
   
   # 写入配置文件
-  sudo bash -c "cat > '$ZT_LOCAL_CONF' << 'EOF'
+  sudo bash -c "cat > '$ZT_LOCAL_CONF' << EOF
 {
   \"settings\": {
-    \"primaryPort\": 8080,
+    \"primaryPort\": $ZT_PORT,
     \"portMappingEnabled\": true
   }
 }
@@ -167,7 +171,7 @@ EOF"
 NODE_ENV=production
 HTTPS_PORT=3443
 ZT_TOKEN=
-ZT_ADDR=127.0.0.1:8080
+ZT_ADDR=127.0.0.1:$ZT_PORT
 EOF"
   
   # 开放端口
@@ -210,7 +214,7 @@ install_moon() {
     
     sudo zerotier-idtool initmoon identity.public > moon.json
     
-    if sudo sed -i "s/\[\]/\[ \"$ip_addr\/8080\" \]/" moon.json >/dev/null 2>/dev/null; then
+    if sudo sed -i "s/\[\]/\[ \"$ip_addr\/$ZT_PORT\" \]/" moon.json >/dev/null 2>/dev/null; then
       green "[Moon] moon.json 配置完成"
     else
       red "[Moon] moon.json 配置失败"
@@ -219,10 +223,10 @@ install_moon() {
     
     # 开放防火墙端口
     if [ "$release_os" = "centos" ]; then
-      sudo firewall-cmd --zone=public --add-port=8080/udp --permanent
+      sudo firewall-cmd --zone=public --add-port=$ZT_PORT/udp --permanent
       sudo firewall-cmd --reload
     elif [ "$release_os" = "ubuntu" ] || [ "$release_os" = "debian" ]; then
-      sudo ufw allow 8080/udp
+      sudo ufw allow $ZT_PORT/udp
       sudo ufw reload
     fi
     
